@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Histogram widget as legend with CARTO.js v4</title>
+  <meta name="viewport" content="initial-scale=1.0, user-scalable=no" />
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+  <link rel="shortcut icon" href="https://cartodb.com/assets/favicon.ico" />
+  <link href="https://fonts.googleapis.com/css?family=Montserrat:400,600,700|Open+Sans:300,400,600" rel="stylesheet">
+
+  <!-- leaflet + jquery -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.2.0/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.2.0/dist/leaflet.js"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+
+  <!-- chartjs -->
+  <script src="Chartbundle.js"></script>
+  <script src="utils.js"></script>
+
+  <!-- carto.js -->
+  <script src="https://cartodb-libs.global.ssl.fastly.net/carto.js/v4.0.0-beta.10/carto.min.js"></script>
+
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body,
+        * {
+            margin: 0;
+            padding: 0;
+        }
+
+        #map {
+            position: absolute;
+            height: 100%;
+            width: 100%;
+            z-index: 0;
+        }
+
+        #histogram {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            height: auto;
+            width: auto;
+            padding: 20px 24px;
+            background: white;
+            box-shadow: 0 0 16px rgba(0, 0, 0, 0.12);
+            border-radius: 4px;
+            opacity: 0.8;
+            z-index: 1;
+            width: 450px;
+        }
+
+        #histogram>h1 {
+            font: 800 12px/16px 'Montserrat';
+            text-transform: uppercase;
+            color: #2D3C43;
+            margin-bottom: 12px;
+        }
+    </style>
+
+</head>
+
+<body>
+
+    <!-- map div -->
+    <div id="map"></div>
+
+    <!-- histogram div -->
+    <div id="histogram">
+        <h1>Airbnb price distribution in Madrid</h1>
+        <canvas id="chart" width="400" height="400"></canvas>
+    </div>
+
+    <script type="text/cartocss" id="style">
+      #layer {
+        marker-width: 5;
+        marker-fill: ramp([price], cartocolor(SunsetDark), equal(10));
+        marker-fill-opacity: 0.7;
+        marker-allow-overlap: true;
+        marker-line-width: 0;
+        marker-comp-op: multiply;
+      }
+    </script>
+
+    <script type="text/sql" id="query">
+      SELECT
+        *
+      FROM
+        air_bnb_madrid
+      WHERE
+        price < 200
+    </script>
+
+    <script>
+        function main() {
+
+            // get styles & query
+            const style = $("#style").text(),
+                query = $("#query").text(),
+
+                // add map variable
+                map = L.map('map', {
+                    zoomControl: false,
+                    center: [40.43, -3.7],
+                    zoom: 13
+                });
+
+            // add Voyager Basemap
+          L.tileLayer('https://api.mapbox.com/styles/v1/wri/cism5nsz4007t2wnrp5xslf7s/tiles/256/{z}/{x}/{y}?access_token=pk.eyJ1Ijoid3JpIiwiYSI6Ik9TY2w5RTQifQ.0HV7dQTjK40mk7GpNNA64g',{attribution: '', opacity: 1}).addTo(map);
+
+            // add client
+            const client = new carto.Client({
+                apiKey: 'API_KEY',
+                username: 'gisdevelopmap'
+            });
+
+            // add CARTO layer
+            const airbnbDataset = new carto.source.SQL(query),
+                airbnbStyle = new carto.style.CartoCSS(style),
+                airbnbLayer = new carto.layer.Layer(airbnbDataset, airbnbStyle);
+
+
+            // Listen for metadata changes
+            airbnbLayer.on('metadataChanged', metadata => {
+                histogram.setMetadata(metadata);
+                histogram.render();
+            });
+
+            client.addLayer(airbnbLayer);
+            client.getLeafletLayer().addTo(map);
+
+            // get histogram dataview
+            const histogramDataview = new carto.dataview.Histogram(airbnbDataset, 'price', { bins: 7 });
+
+            // Create an histogram widget
+            const histogram = new HistogramWidget();
+
+            // When the data is changed render the histogram
+            histogramDataview.on('dataChanged', data => {
+                histogram.render(data);
+            });
+
+            client.addDataview(histogramDataview);
+
+            const bboxFilter = new carto.filter.BoundingBoxLeaflet(map);
+            histogramDataview.addFilter(bboxFilter);
+        }
+
+        // create HistogramWidget function
+        function HistogramWidget() {
+            this.metadata = { colors: ['red'] }
+            this.element = document.getElementById("chart").getContext("2d");
+            this.options = {
+                legend: {
+                    display: false,
+                },
+                title: {
+                    display: true,
+                    text: 'Average price ($)',
+                    position: 'bottom',
+                },
+                scales: {
+                    yAxes: [{
+                        barPercentage: 0.2,
+                        gridLines: {
+                            display: false,
+                        }
+                    }],
+                    xAxes: [{
+                        barPercentage: 1,
+                        gridLines: {
+                            display: false,
+                        }
+                    }]
+                },
+                elements: {
+                    rectangle: {
+                        borderSkipped: 'left',
+                    }
+                }
+            };
+        }
+
+          // function to make our popup-content
+
+
+        // get colors
+        HistogramWidget.prototype.setMetadata = function (metadata) {
+            this.metadata.colors = metadata.styles[0]._buckets.map(element => element.value);
+        }
+
+        // render data
+        HistogramWidget.prototype.render = function (data) {
+            if (!data) {
+                return this._lastData && this.render(this._lastData);
+            }
+            this._lastData = data;
+
+            const bins = data.bins;
+            const labels = data.bins.map(bin => Math.round(bin.avg));
+            const frequencies = data.bins.map(bin => bin.freq);
+
+            new Chart(this.element, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Total',
+                        data: frequencies,
+                        backgroundColor: this.metadata.colors,
+                        borderWidth: 0
+                    }]
+                },
+                options: this.options,
+            });
+        }
+        window.onload = main;
+    </script>
+
+</body>
+
+</html>
